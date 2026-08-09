@@ -12,7 +12,7 @@ client.connect();  //connection to redis server
 const app = express();
 
 app.use(express.json());
-app.use(cors);
+app.use(cors());
 
 
 app.post("/signup", (req,res) =>{

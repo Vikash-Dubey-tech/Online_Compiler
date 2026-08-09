@@ -1,7 +1,13 @@
 #include <iostream>
-using namespace std;
-int main() {
-for (int i = 1; i <= 100; i++) {
-cout << i << " ";
+
+unsigned long long factorial(int n) {
+    unsigned long long result = 1;
+    for (int i = 2; i <= n; ++i) result *= i;
+    return result;
 }
-return 0;}
+
+int main() {
+    for (int n = 0; n <= 10; ++n)
+        std::cout << n << "! = " << factorial(n) << "\n";
+    return 0;
+}
