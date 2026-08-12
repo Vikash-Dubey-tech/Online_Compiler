@@ -96,12 +96,23 @@ Neither `bun index.ts` process hot-reloads — restart them manually after edits
 `Backend/prisma/schema.prisma`:
 
 ```prisma
+model user {
+  id          String       @id @default(uuid())
+  username    String       @unique
+  password    String
+  submissions submission[]
+}
+
 model submission {
   id                String            @id @default(uuid())
   code              String
   language          String
   submissionstatus  SubmissionStatus? @default(processing)
   output            String?
+  stderr            String?
+  userId            String?
+  user              user?             @relation(fields: [userId], references: [id])
+  createdAt         DateTime          @default(now())
 }
 
 enum SubmissionStatus {
@@ -127,12 +138,15 @@ The enum is duplicated in `Worker/prisma/schema.prisma`. Changing it means editi
 
 | Method | Route | Body / Params | Response |
 |---|---|---|---|
-| `POST` | `/submission` | `{ code, language }` | `{ message, id }` |
-| `GET`  | `/submission/:id` | — | `{ submission: { id, code, language, submissionstatus, output } }` |
-| `POST` | `/signup` | — | not implemented |
-| `POST` | `/signin` | — | not implemented |
+| `POST` | `/signup` | `{ username, password }` | `{ message, id }` |
+| `POST` | `/signin` | `{ username, password }` | `{ message, token, username }` |
+| `POST` | `/submission` | `{ code, language }` — **auth required** | `{ message, id }` |
+| `GET`  | `/submission/:id` | — | `{ submission: { id, code, language, submissionstatus, output, stderr, userId, createdAt } }` |
+| `GET`  | `/history` | — **auth required** | `{ submissions: [ ... ] }`, newest first |
 
 Note the **nesting** on the GET response: fields live under `submission`, not at the top level.
+
+Authenticated routes read `Authorization: Bearer <token>`, where the token is the JWT returned by `/signin`; without a valid one they return `401`. The signing secret is `JWT_SECRET`, defaulting to `dev-secret-change-me` if unset — set a real one before exposing this anywhere.
 
 ### Language identifiers
 
@@ -153,7 +167,7 @@ For each queued job the worker writes the source into `Worker/code/` (`a.cpp`, `
 - **C++** — spawns `g++`, **waits for the compiler to exit**, checks the exit code, then runs the produced binary. The wait is essential: `spawn` is non-blocking, so launching the binary on the next line would execute a stale binary left over from the previous submission, or fail with `ENOENT` on the first run.
 - **JS / Python** — spawns the interpreter directly against the written file.
 
-Both stdout **and stderr** are accumulated. On `"close"` (not `"exit"` — that fires before the streams drain and truncates diagnostics), a single `finishSubmission` helper writes the result: exit code `0` sets `Success`, anything else sets `Failure`, and `output` gets stdout and stderr joined in both cases. A process that exits without writing anything records `process exited with code N and produced no output` rather than `null`.
+Both stdout **and stderr** are accumulated, into **separate columns** — stdout to `output`, stderr to `stderr` — so the UI can render them as distinct blocks. On `"close"` (not `"exit"` — that fires before the streams drain and truncates diagnostics), a single `finishSubmission` helper writes both: exit code `0` sets `Success`, anything else sets `Failure`. A non-zero exit that printed nothing on either stream records `process exited with code N` in `stderr` rather than leaving a blank panel.
 
 For C++, compiler diagnostics are captured separately and written to `output` when the compile step fails, so a compile error is distinguishable from a crash at runtime.
 
@@ -163,7 +177,7 @@ Every spawned child — the compiler as well as the program — runs under a **5
 
 `runWithTimeout` resolves with a `timedOut` flag rather than just an exit code, because after a kill `"close"` still fires — with a `null` exit code — and would otherwise be indistinguishable from a normal non-zero exit and recorded as `Failure`.
 
-Whatever the program printed before being killed is kept, with `[time limit exceeded: execution killed after 5s]` appended. The note is always appended: partial output with no marker reads like a completed run.
+Whatever the program printed before being killed is kept in `output`, and `[time limit exceeded: execution killed after 5s]` goes into `stderr`. The note is always written, even when the program printed nothing: partial output with no marker reads like a completed run.
 
 The compiler gets the same limit, since a pathological template or include bomb wedges the worker exactly as badly as an infinite loop does.
 
@@ -177,7 +191,7 @@ Ordered roughly by how much pain each causes.
 - **Unknown languages silently vanish.** Mark them `Failure` instead of dropping the message.
 - **One shared scratch filename.** All submissions use `a.cpp` / `a.exe`. Safe only because the worker is strictly sequential; it breaks the moment you add concurrency. Use per-submission paths.
 - **No sandboxing.** Submitted code runs as your user with full filesystem and network access. This is fine locally and completely unsafe to expose. Containerize before deploying anywhere.
-- **Auth is unimplemented.** `/signup` and `/signin` are empty, there's no user model, and submissions have no owner.
+- **Auth has rough edges.** Tokens never expire and there is no refresh or revocation, `JWT_SECRET` falls back to a hardcoded dev value, and `submission.userId` is nullable — rows created before auth existed have no owner and appear in nobody's history.
 - **Polling never gives up.** The frontend loops indefinitely if a job never leaves `processing`. Add an attempt cap.
 
 ## Troubleshooting
