@@ -9,6 +9,13 @@ datasource db {
 }
 
 
+model user {
+  id          String       @id @default(uuid())
+  username    String       @unique
+  password    String
+  submissions submission[]
+}
+
 model submission {
   id                  String            @id @default(uuid())
   code                String
@@ -16,6 +23,9 @@ model submission {
   submissionstatus    SubmissionStatus? @default(processing)
   output              String?
   stderr              String?
+  userId              String?
+  user                user?             @relation(fields: [userId], references: [id])
+  createdAt           DateTime          @default(now())
 }
 
 enum SubmissionStatus {
