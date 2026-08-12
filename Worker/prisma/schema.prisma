@@ -15,11 +15,13 @@ model submission {
   language            String
   submissionstatus    SubmissionStatus? @default(processing)
   output              String?
+  stderr              String?
 }
 
 enum SubmissionStatus {
   processing
   Success
   Failure
+  TLE
 }
 

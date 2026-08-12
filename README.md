@@ -108,10 +108,20 @@ enum SubmissionStatus {
   processing
   Success
   Failure
+  TLE
 }
 ```
 
 Prisma scalar types are capitalized (`String`, not `string`) — lowercase fails validation.
+
+| Status | Meaning |
+|---|---|
+| `processing` | queued or currently running |
+| `Success` | exited `0` |
+| `Failure` | exited non-zero, or failed to compile |
+| `TLE` | still running at the 5s limit and was killed |
+
+The enum is duplicated in `Worker/prisma/schema.prisma`. Changing it means editing **both** files, running `bunx prisma migrate dev` from `Backend/`, and then `bunx prisma generate` in **both** — `migrate dev` does not regenerate the client for you. Skipping the Backend regenerate produces `Value 'TLE' not found in enum 'SubmissionStatus'` on every read of an affected row, even though the Worker wrote it happily.
 
 ## API
 
@@ -143,7 +153,19 @@ For each queued job the worker writes the source into `Worker/code/` (`a.cpp`, `
 - **C++** — spawns `g++`, **waits for the compiler to exit**, checks the exit code, then runs the produced binary. The wait is essential: `spawn` is non-blocking, so launching the binary on the next line would execute a stale binary left over from the previous submission, or fail with `ENOENT` on the first run.
 - **JS / Python** — spawns the interpreter directly against the written file.
 
-stdout is accumulated and written to `submission.output` alongside `submissionstatus = Success`. A non-zero exit sets `Failure`.
+Both stdout **and stderr** are accumulated. On `"close"` (not `"exit"` — that fires before the streams drain and truncates diagnostics), a single `finishSubmission` helper writes the result: exit code `0` sets `Success`, anything else sets `Failure`, and `output` gets stdout and stderr joined in both cases. A process that exits without writing anything records `process exited with code N and produced no output` rather than `null`.
+
+For C++, compiler diagnostics are captured separately and written to `output` when the compile step fails, so a compile error is distinguishable from a crash at runtime.
+
+### Time limit
+
+Every spawned child — the compiler as well as the program — runs under a **5 second** ceiling (`TIMEOUT_SECONDS` in `Worker/index.ts`). On expiry the child is killed and the submission is marked `TLE`.
+
+`runWithTimeout` resolves with a `timedOut` flag rather than just an exit code, because after a kill `"close"` still fires — with a `null` exit code — and would otherwise be indistinguishable from a normal non-zero exit and recorded as `Failure`.
+
+Whatever the program printed before being killed is kept, with `[time limit exceeded: execution killed after 5s]` appended. The note is always appended: partial output with no marker reads like a completed run.
+
+The compiler gets the same limit, since a pathological template or include bomb wedges the worker exactly as badly as an infinite loop does.
 
 `Worker/code/` is scratch space, overwritten on every submission. It should be gitignored.
 
@@ -151,10 +173,7 @@ stdout is accumulated and written to `submission.output` alongside `submissionst
 
 Ordered roughly by how much pain each causes.
 
-- **Failures record no diagnostics.** The `Failure` branches set only the status; `stderr` is never captured, so `output` stays `null`. A compile error and a crashed program are indistinguishable in the UI. Capture `stderr` into `output`.
-- **No execution timeout.** A submitted `while(true){}` hangs the worker permanently, and every later submission queues behind it. Kill the child after N seconds.
-- **`"exit"` can truncate output.** It fires before stdout has drained. Use `"close"`, which waits for the streams.
-- **A failed spawn emits `"error"`, not `"exit"`.** With no `"error"` handler, the awaited promise never resolves and the worker hangs. Add one to every branch.
+- **A failed spawn still hangs the worker — the 5s timeout does not save you here.** A `spawn` for a binary that isn't on `PATH` emits `"error"`, never `"close"`, so the awaited promise never settles. The timer is armed but only ever *kills* a child that exists; nothing resolves the promise, and the worker stops dead. This is the one remaining way to wedge the queue permanently. Add an `"error"` handler to every branch.
 - **Unknown languages silently vanish.** Mark them `Failure` instead of dropping the message.
 - **One shared scratch filename.** All submissions use `a.cpp` / `a.exe`. Safe only because the worker is strictly sequential; it breaks the moment you add concurrency. Use per-submission paths.
 - **No sandboxing.** Submitted code runs as your user with full filesystem and network access. This is fine locally and completely unsafe to expose. Containerize before deploying anywhere.

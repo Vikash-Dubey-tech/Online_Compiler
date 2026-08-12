@@ -11,6 +11,7 @@ export function App() {
   const [selectedLanguage, setSelectedLanguage] = useState("CPP");
   const [status, setStatus] = useState("");
   const [output, setOutput] = useState("");
+  const [stderr, setStderr] = useState("");
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
 
   async function pollBackend(submissionId : string){
@@ -21,6 +22,7 @@ export function App() {
       if(submission.submissionstatus !== 'processing'){
         setStatus(submission.submissionstatus)
         setOutput(submission.output ?? "")
+        setStderr(submission.stderr ?? "")
         return;
       }
       await new Promise(r=>setTimeout(r,1000));
@@ -47,6 +49,7 @@ export function App() {
             <Button onClick={async() => {
               setStatus("Processing");
               setOutput("");
+              setStderr("");
 
               const response = await axios.post(`${Backend_URL}/submission`, {
                 "code" : textAreaRef.current!.value,
@@ -63,13 +66,20 @@ export function App() {
 
       </div>
 
-      <div className="flex-1 h-screen bg-green-300">
-          <div>
+      <div className="flex-1 h-screen m-4 p-4 border rounded overflow-auto bg-green-300">
+          <div className="font-semibold">
             { status }
           </div>
-          <div>
+          {/* pre + whitespace-pre-wrap: output is multi-line (stack traces,
+              compiler diagnostics) and a plain div collapses it to one line */}
+          <pre className="mt-2 whitespace-pre-wrap break-words font-mono text-sm">
             { output }
-          </div>
+          </pre>
+          { stderr && (
+            <pre className="mt-2 whitespace-pre-wrap break-words font-mono text-sm text-red-800">
+              { stderr }
+            </pre>
+          )}
         </div>
       
     </div>
